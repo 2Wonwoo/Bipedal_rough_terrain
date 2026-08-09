@@ -7,7 +7,7 @@
 #  터진 적도 있다.) 여기서는 버전 이름만 대면 태스크가 자동으로 붙는다.
 set -euo pipefail
 
-PROJ="/media/parksuho/Extreme SSD/parksuho/open_duck_mini_isaaclab"
+PROJ="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 IL="$HOME/Desktop/IsaacLab/isaaclab.sh"
 LOGROOT="$PROJ/logs/rsl_rl/open_duck_mini_v2_joystick"
 RUNLOG="$HOME/odm_logs"; mkdir -p "$RUNLOG"
@@ -32,6 +32,7 @@ task_of() {
     v34c10) echo "Isaac-OpenDuckMini-Joystick-V34C10-v0" ;;
     v34c20) echo "Isaac-OpenDuckMini-Joystick-V34C20-v0" ;;
     v34c2) echo "Isaac-OpenDuckMini-Joystick-V34C2-v0" ;;
+    v35|rough) echo "Isaac-OpenDuckMini-Joystick-Rough-v0" ;;
     # 안전 필터를 켠 변형. 정책은 같고 환경만 다르므로 체크포인트는 원본 것을 쓴다
     # (아래 ckpt_ver 참조). 실기 후보 조합이 v32s 다.
     v28s) echo "Isaac-OpenDuckMini-Joystick-TallSafe-v0" ;;
