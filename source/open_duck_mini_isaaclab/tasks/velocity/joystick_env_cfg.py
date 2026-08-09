@@ -38,6 +38,7 @@ from open_duck_mini_isaaclab.imu_map import MOUNT_POS as IMU_MOUNT_POS
 from open_duck_mini_isaaclab.robot_cfg import OPEN_DUCK_MINI_V2_CFG
 
 from .events import randomize_default_joint_pos as randomize_default_joint_pos_event
+from .terrain import GRAVEL_ROUGH_TERRAINS_CFG
 
 # ── Observation dimension (computed, not hardcoded — see joint_order.py) ──
 # gyro(3) + accel(3) + command(3 vel + 4 head = 7) + joint_pos_rel(14) +
@@ -1153,3 +1154,42 @@ class JoystickEnvCfg_V34C2(JoystickEnvCfg_V34C):
     """
 
     stand_still_scale = -1.0
+
+
+@configclass
+class JoystickEnvCfg_Rough(JoystickEnvCfg_V34C10):
+    """imitation_v35 — v34c10(현재 최고) 그대로 + 지형만 평지/자갈/자갈돌 혼합.
+
+    사용자 요청: 자갈밭·험지에서도 잘 걷도록, 병렬 환경 절반은 평지, 나머지
+    절반은 험지(자갈 + 작은 돌)에서 **동시에** 학습한다 (순차 커리큘럼이나
+    IsaacLab 난이도 커리큘럼이 아니라, 매 iteration 마다 두 종류가 함께
+    섞여 학습되는 고정 비율 구성). terrain.py의 GRAVEL_ROUGH_TERRAINS_CFG
+    참고 — flat 0.5 / gravel(HfRandomUniform, ~4~20mm 굴곡) 0.25 /
+    rocks(HfDiscreteObstacles, ~5~20mm 높이) 0.25.
+
+    바뀌는 것은 지형 하나뿐이다. 관측 차원은 그대로라 v34c10 체크포인트를
+    구조적으로는 로드할 수 있지만, 다이나믹스(지면 굴곡)가 완전히 달라지므로
+    **처음부터 새로 학습해야 한다** — 이어받기 취급 금지.
+
+    terrain 이 "generator" 모드로 바뀌면서 env_origins 가 (0,0,0)이 아닐 수
+    있다는 점 때문에 joystick_env.py 의 두 곳을 같이 고쳤다:
+      - `_get_dones`의 collapsed 판정 (root_pos_w z 를 절대값으로 비교하고
+        있었다 — 지형 패치 원점 높이를 빼지 않으면 자갈/돌 패치에서 오탐/누락)
+      - 비대칭 크리틱의 root height 항 (같은 이유)
+    평지(origin z = 0)에서는 두 수정 다 값이 그대로라 기존 체크포인트 관측과
+    100% 동일하다 — 회귀 없음.
+    """
+
+    terrain = TerrainImporterCfg(
+        prim_path="/World/ground",
+        terrain_type="generator",
+        terrain_generator=GRAVEL_ROUGH_TERRAINS_CFG,
+        collision_group=-1,
+        physics_material=sim_utils.RigidBodyMaterialCfg(
+            friction_combine_mode="multiply",
+            restitution_combine_mode="multiply",
+            static_friction=1.0,
+            dynamic_friction=1.0,
+        ),
+        debug_vis=False,
+    )

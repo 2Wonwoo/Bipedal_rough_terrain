@@ -440,7 +440,9 @@ class JoystickEnv(DirectRLEnv):
                     self._robot.data.root_ang_vel_w,
                     joint_pos - default_joint_pos,
                     joint_vel,
-                    self._robot.data.root_pos_w[:, 2:3],
+                    # relative to this env's terrain patch, not raw world z —
+                    # see _get_dones' collapsed check for why (0 on flat plane).
+                    self._robot.data.root_pos_w[:, 2:3] - self._terrain.env_origins[:, 2:3],
                     self._robot.data.applied_torque[:, self._joint_ids],
                     contact,
                     feet_vel,
@@ -582,7 +584,12 @@ class JoystickEnv(DirectRLEnv):
         # min_base_height_ratio docstring — `flipped` alone only catches
         # >90 deg tips, not a collapsed-but-not-inverted heap, which Stage 1
         # (use_imitation=False) has no other guard against.
-        collapsed = self._robot.data.root_pos_w[:, 2] < self.cfg.ready_base_height * self.cfg.min_base_height_ratio
+        # root_pos_w is world-frame; subtract the terrain patch's own origin
+        # height so this threshold means the same thing on a raised/lowered
+        # rough-terrain patch as it does on the flat plane (origin z is 0
+        # there, so this is a no-op for every existing flat-terrain task).
+        base_height = self._robot.data.root_pos_w[:, 2] - self._terrain.env_origins[:, 2]
+        collapsed = base_height < self.cfg.ready_base_height * self.cfg.min_base_height_ratio
         has_nan = torch.isnan(self._robot.data.joint_pos).any(dim=-1) | torch.isnan(self._robot.data.joint_vel).any(dim=-1)
         # See _get_trunk_head_contact's docstring note (added alongside
         # `collapsed`/`flipped`, not replacing them) — this catches

@@ -169,6 +169,17 @@ try:
         },
     )
 
+    # imitation_v35 — v34c10 + 평지/자갈/자갈돌 혼합 지형 (병렬 환경 절반씩).
+    gym.register(
+        id="Isaac-OpenDuckMini-Joystick-Rough-v0",
+        entry_point=f"{__name__}.tasks.velocity.joystick_env:JoystickEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.tasks.velocity.joystick_env_cfg:JoystickEnvCfg_Rough",
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:JoystickPPORunnerCfg_Gamma097",
+        },
+    )
+
     # 안전 필터를 켠 변형 (학습용이 아니라 평가용).
     gym.register(
         id="Isaac-OpenDuckMini-Joystick-TallSafe-v0",
