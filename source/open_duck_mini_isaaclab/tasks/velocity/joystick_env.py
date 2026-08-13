@@ -498,7 +498,9 @@ class JoystickEnv(DirectRLEnv):
                     self._robot.data.root_ang_vel_w,
                     joint_pos - default_joint_pos,
                     joint_vel,
-                    self._robot.data.root_pos_w[:, 2:3],
+                    # relative to this env's terrain patch, not raw world z —
+                    # see _get_dones' collapsed check for why (0 on flat plane).
+                    self._robot.data.root_pos_w[:, 2:3] - self._terrain.env_origins[:, 2:3],
                     self._robot.data.applied_torque[:, self._joint_ids],
                     contact,
                     feet_vel,
@@ -621,25 +623,38 @@ class JoystickEnv(DirectRLEnv):
 
         if self._hip_in_dir is not None:
             # 실측 관절각 기준. v31 은 목표에 걸었다가 실제 각을 못 묶었다.
-            inward = (self._hip_in_dir
-                      * (joint_pos[:, self._hip_in_act]
-                         - self._current_reference_motion[:, 0:14][:, self._hip_in_ref]))
-            over = torch.clamp(inward - cfg.hip_inward_thresh, min=0.0).sum(dim=-1)
+            walk_target = self._current_reference_motion[:, 0:14][:, self._hip_in_ref]
             if getattr(cfg, "hip_inward_walking_only", False):
-                # 정지에서는 끈다. 이 항은 **레퍼런스를 기준**으로 삼는데, 정지에서는
-                # standstill_hold 가 위상을 0 에 묶으므로 그 기준이 "걷는 중 한쪽 발을
-                # 든 순간" 의 고관절 자세가 된다 (위상 0 의 hip_roll: 좌 -7.69 / 우
-                # +5.50, 13.19 도 벌어짐). 그래서 정지에서 좌우 대칭을 요구하는
-                # leg_symmetry(-3.0) 와 정면으로 싸우고, 계수가 8배(-25) 라 이긴다.
+                # v38 이력: 원래는 정지에서 이 항을 통째로 껐다. 이유는 "레퍼런스가
+                # 기준인데, standstill_hold가 위상을 0에 묶어서 그 기준 자체가
+                # 걷는 중 한쪽 발을 든 순간(비대칭)이 되고, leg_symmetry(-3.0)와
+                # 정면으로 싸워 hip_inward(-25.0, 8배)가 이겨서 정책이 +6.26도
+                # 짝다리로 굳는다"였다.
                 #
-                # 실제로 v36 에서 그 균형점이 그대로 나왔다: 대칭이 요구하는 값은
-                # R_roll = L_roll = +1.60 도인데 hip_inward 경계가 +2.50 도라 정책이
-                # +6.26 도에서 멈췄고, 어긋남 4.66 도가 측정값과 정확히 일치한다.
+                # 그런데 "정지에서 꺼도 안전하다"는 판단은 그 시점의 기본 정지
+                # 자세가 실측 62 mm 여유였다는 전제 위에 있었다. 이후 액추에이터
+                # 모델·레퍼런스·READY 자세가 여러 번 바뀌며 그 전제가 조용히
+                # 깨졌다 — 자갈/험지 지형 추가 실험(리워드는 동일 계보) 실측 결과
+                # 정지 시 5 mm 위반 88.0%, 실접촉 46.0%, 최소 간격 0.0 mm.
+                # 지형 유무와 무관함을 검증했다(같은 체크포인트를 지형 없는
+                # 태스크에 얹어 재생 — 평지가 위반 86.0%/접촉 82.0%로 오히려
+                # 더 나쁨). 즉 지형이 아니라 이 게이트 자체가 더 이상 안전하지
+                # 않다.
                 #
-                # 정지에서 꺼도 되는 이유: 이 항의 목적은 보행 중 다리-몸통
-                # 자가충돌 방지인데(접촉 = 액추에이터 파손), 정지에서는 양발이 땅에
-                # 붙어 거의 기본 자세이고 실측 최소 간격이 62 mm 다 (위험선 5 mm).
-                over = over * (torch.linalg.norm(self._command[:, :3], dim=-1) > 0.01).float()
+                # 고쳐야 할 것은 "정지에서 끈다"가 아니라 "무엇을 기준으로
+                # 재는가" 였다 — 통째로 끄는 대신, 정지에서는 레퍼런스(비대칭)
+                # 대신 **정지 목표 자세(대칭 — cost_stand_still이 쓰는 것과 동일)**
+                # 를 기준으로 잰다. leg_symmetry가 원하는 지점과 hip_inward가
+                # 원하는 지점이 이제 같은 곳이라 더 이상 서로 안 싸운다.
+                standstill_target = (
+                    self._standstill_pose if self._standstill_pose is not None else default_joint_pos
+                )[:, self._hip_in_act]
+                is_standing = (torch.linalg.norm(self._command[:, :3], dim=-1) <= 0.01).unsqueeze(-1)
+                target = torch.where(is_standing, standstill_target, walk_target)
+            else:
+                target = walk_target
+            inward = self._hip_in_dir * (joint_pos[:, self._hip_in_act] - target)
+            over = torch.clamp(inward - cfg.hip_inward_thresh, min=0.0).sum(dim=-1)
             terms["hip_inward"] = over * cfg.hip_inward_scale
 
         if cfg.use_path_frame and cfg.path_tracking_scale != 0.0:
@@ -679,7 +694,12 @@ class JoystickEnv(DirectRLEnv):
         # min_base_height_ratio docstring — `flipped` alone only catches
         # >90 deg tips, not a collapsed-but-not-inverted heap, which Stage 1
         # (use_imitation=False) has no other guard against.
-        collapsed = self._robot.data.root_pos_w[:, 2] < self.cfg.ready_base_height * self.cfg.min_base_height_ratio
+        # root_pos_w is world-frame; subtract the terrain patch's own origin
+        # height so this threshold means the same thing on a raised/lowered
+        # rough-terrain patch as it does on the flat plane (origin z is 0
+        # there, so this is a no-op for every existing flat-terrain task).
+        base_height = self._robot.data.root_pos_w[:, 2] - self._terrain.env_origins[:, 2]
+        collapsed = base_height < self.cfg.ready_base_height * self.cfg.min_base_height_ratio
         has_nan = torch.isnan(self._robot.data.joint_pos).any(dim=-1) | torch.isnan(self._robot.data.joint_vel).any(dim=-1)
         # See _get_trunk_head_contact's docstring note (added alongside
         # `collapsed`/`flipped`, not replacing them) — this catches
