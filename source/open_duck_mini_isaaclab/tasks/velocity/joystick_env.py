@@ -159,6 +159,23 @@ class JoystickEnv(DirectRLEnv):
         self._head_bob_act_idx = [i for i in self._head_act_idx if ACTUATOR_JOINT_NAMES[i] in _bob_names]
         self._head_lock_act_idx = [i for i in self._head_act_idx if ACTUATOR_JOINT_NAMES[i] not in _bob_names]
 
+        # head_bob_counter_joint: mirrors _head_bob_act_idx[0]'s raw delta
+        # (opposite sign) every step — stays in _head_lock_act_idx (still not
+        # RL-driven) but _pre_physics_step overrides its target afterward.
+        # See joystick_env_cfg.py's field docstring for the "Z자 목" motivation.
+        _counter_name = getattr(cfg, "head_bob_counter_joint", None)
+        self._head_counter_act_idx = None
+        if _counter_name is not None:
+            assert self._head_bob_act_idx, (
+                "cfg.head_bob_counter_joint is set but head_bob_joint_names is empty "
+                "— there is nothing for it to mirror."
+            )
+            self._head_counter_act_idx = ACTUATOR_JOINT_NAMES.index(_counter_name)
+            assert self._head_counter_act_idx in self._head_lock_act_idx, (
+                f"head_bob_counter_joint {_counter_name!r} must be a head joint that is "
+                "still locked (i.e. not also in head_bob_joint_names)."
+            )
+
         n = self.num_envs
         nj = len(ACTUATOR_JOINT_NAMES)
         dev = self.device
@@ -363,6 +380,16 @@ class JoystickEnv(DirectRLEnv):
             # self._head_lock_act_idx still gets zeroed exactly as before.
             action_w_delay = action_w_delay.clone()
             action_w_delay[:, self._head_lock_act_idx] = 0.0
+
+            if self._head_counter_act_idx is not None:
+                # Z자 목: mirror the bob joint's raw delta so this joint
+                # counter-rotates by the same amount, every step, exactly.
+                # Post-scale this cancels the bob joint's deviation from its
+                # own default (target = default + delta*action_scale for
+                # both), so neck_pitch + head_pitch stays constant while the
+                # head bobs — a hard coupling, not something reward_head_bob
+                # has to teach the policy to approximate.
+                action_w_delay[:, self._head_counter_act_idx] = -action_w_delay[:, self._head_bob_act_idx[0]]
 
         default_pos = self._robot.data.default_joint_pos[:, self._joint_ids]
         target = default_pos + action_w_delay * self.cfg.action_scale

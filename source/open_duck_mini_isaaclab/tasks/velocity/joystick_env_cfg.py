@@ -458,6 +458,23 @@ class JoystickEnvCfg(DirectRLEnvCfg):
     head_bob_amplitude = 0.0   # rad — 0.2618 (15 deg) calibrated via FK to ~1cm head travel
     head_bob_scale = 0.0       # reward weight, 0 = off
 
+    # head_bob_counter_joint: a single joint that mirrors head_bob_joint_names[0]'s
+    # raw action delta with the opposite sign, every step, exactly — a hard
+    # kinematic coupling (like hip_dev_limit_*'s clamp), not something RL has
+    # to learn via reward. Stays "locked" (never gets its own action_rate/
+    # exploration budget); its lock target just moves instead of staying at
+    # the default pose. None by default (no behavior change).
+    #
+    # Motivation ("Z자 목"): this robot's READY pose already sets
+    # neck_pitch=head_pitch so the two segments' rotations cancel and the
+    # face stays level (see joint_order.py / READY_JOINT_POS_*_ZNECK). If
+    # only neck_pitch bobs while head_pitch stays frozen at its default, that
+    # cancellation breaks — the head nods (tilts) instead of translating in
+    # height. Coupling head_pitch = default_head_pitch - (neck_pitch's
+    # deviation from its default) keeps neck_pitch + head_pitch constant
+    # (the Z's two alternate angles stay equal) while the head bobs.
+    head_bob_counter_joint: str | None = None
+
     # Per-term sensitivities inside reward_imitation. Defaults reproduce
     # v1-v11 exactly; JoystickEnvCfg_Walk2 is where they actually change.
     # See rewards.py's comment block for the imit_internals2.py measurement
@@ -1916,6 +1933,35 @@ class JoystickEnvCfg_Rough2(JoystickEnvCfg_Rough):
     head_bob_joint_names = ("neck_pitch",)
     head_bob_amplitude = 0.2618  # 15 deg — FK로 실측한 머리 9.64mm(~1cm) 스윙
     head_bob_scale = 1.0
+
+
+@configclass
+class JoystickEnvCfg_Rough3(JoystickEnvCfg_Rough2):
+    """Rough2 + head_pitch를 neck_pitch와 반대로 커플링 — "Z자 엇각" 유지.
+
+    사용자 지적: v51(Rough2)은 neck_pitch만 움직이고 head_pitch는 READY
+    기본값(30도)에 고정돼 있다. 이 로봇의 Z자 목 자세는 원래
+    neck_pitch=head_pitch로 둘의 회전이 서로 상쇄돼 얼굴이 수평을 유지하도록
+    설계된 것인데(READY_JOINT_POS_*_ZNECK 참고), neck_pitch만 오르내리고
+    head_pitch가 안 따라가면 그 상쇄가 깨져서 머리가 위아래로 "이동"하는 게
+    아니라 "끄덕(기울임)"이게 된다.
+
+    **RL이 배우게 하지 않고 액션 처리 단계에서 직접 결합했다** — 이 프로젝트가
+    반복해서 확인한 원칙("리워드로는 보장이 안 된다") 그대로다. 매 스텝
+    head_pitch 의 원시 액션 델타를 `-`(neck_pitch 의 원시 델타)로 덮어써서
+    (`joystick_env.py::head_bob_counter_joint`), action_scale 적용 후
+    `head_pitch_target = default_head_pitch - (neck_pitch_target -
+    default_neck_pitch)`가 정확히 성립한다 — `neck_pitch + head_pitch`가
+    상수로 유지된다("Z자의 두 엇각이 같다"). RL 출력 차원은 그대로 11개
+    (다리 10 + neck_pitch 1)다 — head_pitch는 여전히 RL이 독립적으로
+    배우는 게 아니라 커플링으로 따라올 뿐이다.
+
+    **판정**: 롤아웃에서 head_pitch가 실제로 neck_pitch와 반대 부호로,
+    같은 크기로 움직이는지(합이 상수인지) 확인. 걷기 성능은 Rough2 대비
+    변화 없어야 한다 — RL이 보는 액션 공간은 안 바뀌었으니까.
+    """
+
+    head_bob_counter_joint = "head_pitch"
 
 
 @configclass
