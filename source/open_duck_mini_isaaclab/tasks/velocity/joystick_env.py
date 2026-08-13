@@ -72,6 +72,7 @@ from .rewards import (
     cost_torques,
     cost_upright_standstill,
     reward_alive,
+    reward_head_bob,
     reward_imitation,
     reward_path_tracking,
     reward_tracking_ang_vel,
@@ -149,6 +150,14 @@ class JoystickEnv(DirectRLEnv):
             i for i, nm in enumerate(ACTUATOR_JOINT_NAMES)
             if nm in ("neck_pitch", "head_pitch", "head_yaw", "head_roll")
         ]
+        # head_bob: exempt cfg.head_bob_joint_names (e.g. just "neck_pitch")
+        # from the lock-to-zero below, so it can be driven by the new
+        # reward_head_bob term while the other head DOFs stay hard-locked.
+        # Empty by default -> _head_bob_act_idx empty, _head_lock_act_idx ==
+        # _head_act_idx, byte-for-byte the old behavior.
+        _bob_names = set(getattr(cfg, "head_bob_joint_names", ()))
+        self._head_bob_act_idx = [i for i in self._head_act_idx if ACTUATOR_JOINT_NAMES[i] in _bob_names]
+        self._head_lock_act_idx = [i for i in self._head_act_idx if ACTUATOR_JOINT_NAMES[i] not in _bob_names]
 
         n = self.num_envs
         nj = len(ACTUATOR_JOINT_NAMES)
@@ -348,8 +357,12 @@ class JoystickEnv(DirectRLEnv):
             # reward, and their commands are random targets the gait has no
             # opinion about, so leaving them actuated only spends exploration
             # noise on 4 of 14 action dims without informing locomotion.
+            #
+            # Exception: cfg.head_bob_joint_names (e.g. "neck_pitch") stays
+            # actuated so reward_head_bob can drive it — everything else in
+            # self._head_lock_act_idx still gets zeroed exactly as before.
             action_w_delay = action_w_delay.clone()
-            action_w_delay[:, self._head_act_idx] = 0.0
+            action_w_delay[:, self._head_lock_act_idx] = 0.0
 
         default_pos = self._robot.data.default_joint_pos[:, self._joint_ids]
         target = default_pos + action_w_delay * self.cfg.action_scale
@@ -595,6 +608,26 @@ class JoystickEnv(DirectRLEnv):
                 self._command, joint_pos, self._sym_l, self._sym_r, self._sym_s,
             ) * cfg.leg_symmetry_scale,
         }
+
+        if self._head_bob_act_idx:
+            # 보행 위상에 맞춰 목(현재는 neck_pitch 하나)을 살짝 위아래로.
+            # placo/Playground 어디에도 이런 레퍼런스가 없어서(셋 다 확인 —
+            # placo는 다리만 풀고, Playground의 cost_head_pos는 정의만 되고
+            # 리워드 딕셔너리에 연결된 적이 없음) 위상에서 직접 만든 목표각이다.
+            # 진폭은 FK 실측(±15도 = 머리 9.64mm, 약 1cm) — rewards.reward_head_bob
+            # 참고. 정지에서는 꺼진다(cmd_norm 게이트) — 걸을 때만 끄덕이라는
+            # 요청.
+            phase = 2.0 * torch.pi * self._imitation_i.float() / self._gait_period_steps
+            neck_idx = self._head_bob_act_idx[0]
+            terms["head_bob"] = reward_head_bob(
+                joint_pos[:, neck_idx],
+                phase,
+                default_joint_pos[:, neck_idx],
+                cfg.head_bob_amplitude,
+                torch.linalg.norm(self._command[:, :3], dim=-1),
+                cfg.tracking_sigma,
+            ) * cfg.head_bob_scale
+
         # Stage 1 (use_imitation=False): omitted entirely, not just
         # zero-weighted — reward_imitation would divide-by-nothing-useful
         # against an all-zero self._current_reference_motion otherwise.

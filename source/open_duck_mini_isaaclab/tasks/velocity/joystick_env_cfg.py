@@ -450,6 +450,14 @@ class JoystickEnvCfg(DirectRLEnvCfg):
     # _pre_physics_step). Default False to keep older variants unchanged.
     lock_head_joints = False
 
+    # head_bob: joints named here stay exempt from lock_head_joints and get
+    # driven by rewards.reward_head_bob toward a gait-phase-locked sine
+    # target instead. Empty by default (no behavior change for any existing
+    # task, locked or not). See JoystickEnvCfg_Rough2 for the first user.
+    head_bob_joint_names: tuple = ()
+    head_bob_amplitude = 0.0   # rad — 0.2618 (15 deg) calibrated via FK to ~1cm head travel
+    head_bob_scale = 0.0       # reward weight, 0 = off
+
     # Per-term sensitivities inside reward_imitation. Defaults reproduce
     # v1-v11 exactly; JoystickEnvCfg_Walk2 is where they actually change.
     # See rewards.py's comment block for the imit_internals2.py measurement
@@ -1862,6 +1870,52 @@ class JoystickEnvCfg_Rough(JoystickEnvCfg_V49):
         ),
         debug_vis=False,
     )
+
+
+@configclass
+class JoystickEnvCfg_Rough2(JoystickEnvCfg_Rough):
+    """Rough 그대로 + 보행 중 목(neck_pitch)이 위상에 맞춰 살짝 위아래로.
+
+    사용자 요청: "목 부분이 보행할 때만 주기에 맞춰 살짝 위아래로, 1cm 높이로".
+
+    placo 레퍼런스로 모방시키는 방법(다리와 같은 방식)을 먼저 검토했는데,
+    세 원본 저장소(Open_Duck_Mini/Playground/reference_motion_generator)를
+    전부 뒤져도 목 동작 레퍼런스가 없다 — placo는 다리만 풀고, Playground의
+    `cost_head_pos`는 정의만 되고 실제 리워드 딕셔너리에 연결된 적이 없다
+    (죽은 코드). 이 컴퓨터엔 placo도 안 깔리고(빌드 실패) 예전에 레퍼런스를
+    생성하던 랩PC도 지금 네트워크가 달라 접속이 안 돼서, placo로 새 목
+    레퍼런스를 만드는 경로는 현재 막혀 있다. 그래서 위상 기반 절차적 목표를
+    새로 만들었다 (rewards.reward_head_bob) — 나중에 랩PC 접속이 되면 이
+    구조(목표각 vs 실측각 추종) 그대로 두고 목표만 placo 레퍼런스로 바꿀 수
+    있다.
+
+    **잠금 예외**: `lock_head_joints=True`는 그대로 두고 `neck_pitch` 하나만
+    잠금에서 빼서(head_bob_joint_names), 나머지 3개 머리 관절은 기존처럼
+    READY에 완전히 고정된다 — "목이 움직인다"이지 "머리 전체가 움직인다"가
+    아니다.
+
+    **진폭 0.2618 rad(15도)는 감으로 정한 게 아니라 FK 실측이다**
+    (pinocchio, `robot/robot.urdf`, Z자 목 READY 자세 neck_pitch=head_pitch=
+    30도 기준): neck_pitch를 ±15도 흔들면 "head" 프레임의 월드 Z가 9.64mm
+    움직인다 — 사용자가 요청한 "1cm"에 가장 가까운 값. 이 관계는 관절
+    체인의 rpy 오프셋들 때문에 비선형이라(20~30도 구간은 거의 안 움직이고
+    30~40도 구간이 훨씬 예민함) 선형 근사가 아니라 실측 스윕으로 잡았다.
+
+    **정지에서는 꺼진다** (`cmd_norm > 0.01` 게이트, reward_head_bob 참고) —
+    "보행할 때만" 요청 그대로.
+
+    리워드 계수(head_bob_scale=1.0)는 첫 시도값이다 — 다른 항들처럼 중간에서
+    시작해서 결과 보고 조정. 걷기 자체를 방해하면 안 되므로
+    tracking_lin_vel_scale(2.5)보다 낮게 잡았다.
+
+    **판정**: 목이 실제로 보행 위상에 맞춰 오르내리는지(육안/npz), 그리고
+    걷기 성능(추종·정지·5mm 안전)이 Rough 대비 나빠지지 않는지 — 안 나빠야
+    "공짜로 얹은 기능"이 맞다.
+    """
+
+    head_bob_joint_names = ("neck_pitch",)
+    head_bob_amplitude = 0.2618  # 15 deg — FK로 실측한 머리 9.64mm(~1cm) 스윙
+    head_bob_scale = 1.0
 
 
 @configclass

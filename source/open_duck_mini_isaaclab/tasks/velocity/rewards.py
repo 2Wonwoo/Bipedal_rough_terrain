@@ -31,6 +31,42 @@ def reward_tracking_ang_vel(commands: torch.Tensor, ang_vel: torch.Tensor, track
     return torch.exp(-ang_vel_error / tracking_sigma)
 
 
+def reward_head_bob(
+    neck_pitch_pos: torch.Tensor,
+    phase: torch.Tensor,
+    base_angle: torch.Tensor,
+    amplitude: float,
+    cmd_norm: torch.Tensor,
+    tracking_sigma: float,
+) -> torch.Tensor:
+    """Reward following a gait-phase-locked up/down neck nod while walking.
+
+    No such reference exists anywhere upstream (Open_Duck_Mini,
+    Open_Duck_Playground, Open_Duck_reference_motion_generator all confirmed
+    to have zero head motion generation — placo only ever solves the legs,
+    and Playground's own `cost_head_pos` is defined but never wired into its
+    reward dict). So this is a from-scratch procedural target, not a ported
+    imitation term: `target = base_angle + amplitude * sin(phase)`, phase
+    shared 1:1 with the imitation_phase observation (2*pi*i/gait_period_steps)
+    so the nod stays locked to footstep timing rather than drifting relative
+    to it.
+
+    amplitude=0.2618 rad (15 deg) was picked by FK (pinocchio), not guessed —
+    at this robot's Z-neck READY pose (neck_pitch=head_pitch=30 deg), sweeping
+    neck_pitch by +-15 deg moves the "head" URDF frame through 9.64 mm of
+    world-Z travel, i.e. ~1 cm peak-to-peak (the relationship is nonlinear and
+    a bit asymmetric around 30 deg — this is the calibrated value, not a
+    linear estimate).
+
+    `cmd_norm` gates this off at standstill (>0.01, same convention as
+    hip_inward_walking_only/reward_imitation) — the user asked for the nod
+    only while actually walking, not standing still.
+    """
+    target = base_angle + amplitude * torch.sin(phase)
+    err = (neck_pitch_pos - target) ** 2
+    return torch.exp(-err / tracking_sigma) * (cmd_norm > 0.01).float()
+
+
 def cost_torques(torques: torch.Tensor) -> torch.Tensor:
     return torch.sum(torques**2, dim=-1)
 
