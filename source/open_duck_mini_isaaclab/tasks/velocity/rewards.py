@@ -39,37 +39,49 @@ def reward_head_bob(
     cmd_norm: torch.Tensor,
     tracking_sigma: float,
 ) -> torch.Tensor:
-    """Reward following a gait-phase-locked up/down neck nod while walking.
+    """Reward a gait-locked up/down head *translation* while walking — not a
+    nod (tilt). Rewritten from scratch per user direction; the sine-target
+    mechanics are the same shape as the first version but every design
+    choice below was re-specified, not carried over by default.
 
-    No such reference exists anywhere upstream (Open_Duck_Mini,
-    Open_Duck_Playground, Open_Duck_reference_motion_generator all confirmed
-    to have zero head motion generation — placo only ever solves the legs,
-    and Playground's own `cost_head_pos` is defined but never wired into its
-    reward dict). So this is a from-scratch procedural target, not a ported
-    imitation term: `target = base_angle + amplitude * sin(phase)`, phase
-    shared 1:1 with the imitation_phase observation (2*pi*i/gait_period_steps)
-    so the nod stays locked to footstep timing rather than drifting relative
-    to it.
+    **Motion**: the head floats up, then sinks down, once per stride, with
+    the face staying level throughout. That leveling is what
+    `head_bob_counter_joint` (joystick_env.py) is for — it mirrors this
+    joint's (neck_pitch's) deviation from `base_angle` onto the counter
+    joint (head_pitch) with the opposite sign, every step, unconditionally.
+    So neck_pitch and head_pitch — the robot's two "Z자" segments as seen
+    from the right-side view — always sum to a constant; only *this*
+    function's job is to decide how neck_pitch itself moves over time. No
+    upstream reference exists for any of this (placo only ever solves the
+    legs; Playground's `cost_head_pos` is defined but never wired into its
+    reward dict) — the whole shape here is procedural, not imitated.
 
-    amplitude was originally 0.2618 rad (15 deg), picked by FK (pinocchio):
-    at this robot's Z-neck READY pose (neck_pitch=head_pitch=30 deg), sweeping
-    neck_pitch by +-15 deg moves the "head" URDF frame through 9.64 mm of
-    world-Z travel (the relationship is nonlinear and a bit asymmetric
-    around 30 deg). v52's rollout actually achieved only ~+-12 deg of that
-    (RL traded some tracking for the other reward terms) — since the user
-    then asked for a *smaller* range, later configs (JoystickEnvCfg_Rough4+)
-    lower this further; see their docstrings for the current value.
+    **Phase source**: locked to the same clock as `imitation_phase`
+    (`2*pi*i/gait_period_steps`), not to a directly-read hip_roll angle.
+    Both thighs' hip_roll already oscillates at exactly this period — it's
+    the same underlying stride clock everything in this task is slaved to —
+    so this *is* "matched to each thigh's rolling period" in the sense that
+    matters (same frequency, same phase reference), without making the
+    target a moving, still-being-learned quantity like a live hip_roll
+    reading would (that's an actual-position signal the policy is
+    simultaneously trying to shape, not a stable clock — chasing it would
+    fight itself over training).
 
-    v51/v52 (`cmd_norm`-gated to exactly 0 at standstill, matching
-    hip_inward_walking_only/reward_imitation's convention) turned out wrong
-    for this term specifically: zero reward means zero gradient, so nothing
-    pulled neck_pitch back toward level once a walking bout ended mid-nod —
-    the user observed the head staying visibly bowed at standstill. Fixed
-    by *collapsing the target* to base_angle when standing instead of
-    turning the reward off — `walking` zeroes the sine's amplitude, not the
-    whole term, so there's always a live gradient pulling neck_pitch home.
-    head_bob_counter_joint (if set) then follows automatically, since it
-    mirrors neck_pitch's deviation from base_angle unconditionally.
+    **Amplitude**: capped at 10 deg (see JoystickEnvCfg_Rough5's
+    `head_bob_amplitude`) per user direction — down from earlier attempts'
+    15 deg and 8.6 deg. RL has consistently undershot the design amplitude
+    in every prior run (v51 hit ~12 of 15 deg; expect a similar ~70-80%
+    fraction here too), so treat this as a ceiling, not the achieved value.
+
+    **Standstill**: `walking` collapses the sine's amplitude to 0 rather
+    than gating the whole reward to 0 — target becomes exactly `base_angle`
+    (level, Z자 유지) with a live gradient still pulling neck_pitch there.
+    A hard 0-reward gate was tried first (matching hip_inward_walking_only's
+    convention) and was wrong for this term specifically: zero reward means
+    zero gradient, so nothing pulled neck_pitch back to level once a walking
+    bout ended mid-swing — the user watched the head stay visibly bowed at
+    standstill. This still holds under the rewrite; removing it would
+    reintroduce that bug.
     """
     walking = (cmd_norm > 0.01).float()
     target = base_angle + amplitude * torch.sin(phase) * walking

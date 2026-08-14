@@ -1993,6 +1993,41 @@ class JoystickEnvCfg_Rough4(JoystickEnvCfg_Rough3):
 
 
 @configclass
+class JoystickEnvCfg_Rough5(JoystickEnvCfg_Rough4):
+    """Rough4 + `reward_head_bob` 전면 재작성 + 진폭 10도 이내로 축소.
+
+    사용자가 "저번에 추가했던 헤드밥 리워드는 다 지워달라"고 명시적으로
+    요청 — `rewards.reward_head_bob`을 처음부터 다시 썼다(수식 형태는
+    비슷하지만 위상 기준·진폭·정지 처리 전부 재검토). 사용자가 동작을
+    다시 설명: "끄덕임(고개 숙임)이 아니라 얼굴 각도는 그대로인 채 머리가
+    위아래로 붕 떴다 가라앉는 병진 이동, Z자의 두 각이 같이 제어됨" —
+    이건 이미 `head_bob_counter_joint`(head_pitch가 neck_pitch를 반대로
+    미러링)로 구현돼 있던 부분이라 그대로 유지(Rough3부터 상속).
+
+    바뀐 것: 위상 기준을 "각 허벅지(hip_roll)의 롤링 주기에 맞춘다"로
+    재확인 — hip_roll도 결국 같은 `gait_period_steps`로 도므로 기존
+    위상 클럭(`imitation_phase`와 공유)을 그대로 쓰는 게 맞다. hip_roll
+    각도를 직접 읽어 목표로 삼지 않은 이유: 그건 정책이 동시에 학습
+    중인, 계속 변하는 값이라 목표로 쓰면 스스로 쫓아다니는 꼴이 된다 —
+    같은 주기의 안정된 시계(위상 카운터)를 쓰는 게 학습이 안정적이다.
+
+    사용법은 neck_pitch/head_pitch만(Rough2에서 확정된 것 그대로) —
+    다른 머리 관절(head_yaw/head_roll)은 여전히 완전 고정.
+
+    진폭: 0.2618rad(15도, Rough2/3) -> 0.15rad(~8.6도, Rough4) ->
+    **0.1745rad(10도, 이번)**. 지금까지 실측 진폭이 항상 설계값의
+    70~80%였으니(v51: 목표 15도 중 ~12도 실현), 이번에도 실제로는 10도
+    보다 작게 나올 가능성이 높다 — 상한으로 잡은 값이다.
+
+    **판정**: 목이 붕 뜨고 가라앉는 폭이 육안/FK 환산으로 눈에 띄게
+    작아졌는지, 정지 시 여전히 수평으로 복귀하는지, 걷기 성능(추종·
+    5mm 안전)이 Rough4 대비 변화 없는지.
+    """
+
+    head_bob_amplitude = 0.1745  # 10 deg — 상한. 실제 도달치는 보통 이보다 작음
+
+
+@configclass
 class JoystickEnvCfg_V34C20(JoystickEnvCfg_V34C):
     """imitation_v34c20 — v34c(정지 위상 고정) + 레퍼런스 높이 +20 mm (ref_g135)."""
 
