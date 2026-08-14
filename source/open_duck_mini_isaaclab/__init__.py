@@ -369,6 +369,17 @@ try:
         },
     )
 
+    # Rough5 + 목 바운싱을 걸음마다(한쪽 발 뗄 때마다) 한 번으로 (주파수 2배).
+    gym.register(
+        id="Isaac-OpenDuckMini-Joystick-Rough6-v0",
+        entry_point=f"{__name__}.tasks.velocity.joystick_env:JoystickEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.tasks.velocity.joystick_env_cfg:JoystickEnvCfg_Rough6",
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:JoystickPPORunnerCfg_Gamma097",
+        },
+    )
+
     gym.register(
         id="Isaac-OpenDuckMini-Joystick-V34C20-v0",
         entry_point=f"{__name__}.tasks.velocity.joystick_env:JoystickEnv",

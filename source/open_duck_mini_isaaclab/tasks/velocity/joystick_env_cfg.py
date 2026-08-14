@@ -457,6 +457,12 @@ class JoystickEnvCfg(DirectRLEnvCfg):
     head_bob_joint_names: tuple = ()
     head_bob_amplitude = 0.0   # rad — 0.2618 (15 deg) calibrated via FK to ~1cm head travel
     head_bob_scale = 0.0       # reward weight, 0 = off
+    # 1.0 = one bob per full gait_period_steps cycle (both feet step once).
+    # 2.0 = one bob per single footfall, either foot (see JoystickEnvCfg_Rough6
+    # and rewards.reward_head_bob's docstring for the foot-contact-timing
+    # check that this is based on). Default matches the original (Rough2-5)
+    # behavior — no change for existing configs that don't set this.
+    head_bob_cycles_per_period = 1.0
 
     # head_bob_counter_joint: a single joint that mirrors head_bob_joint_names[0]'s
     # raw action delta with the opposite sign, every step, exactly — a hard
@@ -2025,6 +2031,32 @@ class JoystickEnvCfg_Rough5(JoystickEnvCfg_Rough4):
     """
 
     head_bob_amplitude = 0.1745  # 10 deg — 상한. 실제 도달치는 보통 이보다 작음
+
+
+@configclass
+class JoystickEnvCfg_Rough6(JoystickEnvCfg_Rough5):
+    """Rough5 + 목 바운싱을 걸음마다(한쪽 발 뗄 때마다) 한 번으로.
+
+    사용자 질문: "오른발이 나갈 때 바운싱 한 번 맞아?" — 확인해보니
+    아니었다. `ref_g125sym`의 발 접지 채널을 직접 찍어보면, 사인파 한
+    사이클(위상 0~360°, `gait_period_steps`=27스텝) 안에 **오른발 한 걸음
+    (위상 ~40~120°)과 왼발 한 걸음(위상 ~130~240°)이 둘 다** 들어있다 —
+    즉 기존 구조는 "두 발이 한 바퀴 다 돌 때 한 번" 바운싱이었지 "한쪽
+    발이 나갈 때마다 한 번"이 아니었다.
+
+    사용자가 후자(걸음마다)를 원해서, `sin(phase)`를 `sin(2*phase)`로
+    바꿨다(`rewards.reward_head_bob`의 `cycles_per_period`,
+    `head_bob_cycles_per_period`로 노출) — 한 gait_period_steps 사이클
+    안에 사인파가 두 번 돌아서, 오른발 걸음 구간에 바운스 정점이 한 번,
+    왼발 걸음 구간에 또 한 번 들어간다. 다른 설계(진폭 10도 상한, 정지
+    시 수평 복귀, Z자 유지 커플링)는 Rough5와 전부 동일 — 주파수만 2배.
+
+    **판정**: 롤아웃에서 neck_pitch 사인이 실제로 27스텝에 두 번 도는지,
+    그 두 번의 정점이 각각 오른발/왼발 스윙 구간 안에 들어가는지(위
+    접지 데이터 재확인), 걷기 성능이 Rough5 대비 변화 없는지.
+    """
+
+    head_bob_cycles_per_period = 2.0
 
 
 @configclass

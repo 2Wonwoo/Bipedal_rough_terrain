@@ -38,34 +38,40 @@ def reward_head_bob(
     amplitude: float,
     cmd_norm: torch.Tensor,
     tracking_sigma: float,
+    cycles_per_period: float = 1.0,
 ) -> torch.Tensor:
     """Reward a gait-locked up/down head *translation* while walking — not a
     nod (tilt). Rewritten from scratch per user direction; the sine-target
     mechanics are the same shape as the first version but every design
     choice below was re-specified, not carried over by default.
 
-    **Motion**: the head floats up, then sinks down, once per stride, with
-    the face staying level throughout. That leveling is what
-    `head_bob_counter_joint` (joystick_env.py) is for — it mirrors this
-    joint's (neck_pitch's) deviation from `base_angle` onto the counter
-    joint (head_pitch) with the opposite sign, every step, unconditionally.
-    So neck_pitch and head_pitch — the robot's two "Z자" segments as seen
-    from the right-side view — always sum to a constant; only *this*
-    function's job is to decide how neck_pitch itself moves over time. No
-    upstream reference exists for any of this (placo only ever solves the
-    legs; Playground's `cost_head_pos` is defined but never wired into its
-    reward dict) — the whole shape here is procedural, not imitated.
+    **Motion**: the head floats up, then sinks down, with the face staying
+    level throughout. That leveling is what `head_bob_counter_joint`
+    (joystick_env.py) is for — it mirrors this joint's (neck_pitch's)
+    deviation from `base_angle` onto the counter joint (head_pitch) with
+    the opposite sign, every step, unconditionally. So neck_pitch and
+    head_pitch — the robot's two "Z자" segments as seen from the right-side
+    view — always sum to a constant; only *this* function's job is to
+    decide how neck_pitch itself moves over time. No upstream reference
+    exists for any of this (placo only ever solves the legs; Playground's
+    `cost_head_pos` is defined but never wired into its reward dict) — the
+    whole shape here is procedural, not imitated.
 
     **Phase source**: locked to the same clock as `imitation_phase`
     (`2*pi*i/gait_period_steps`), not to a directly-read hip_roll angle.
     Both thighs' hip_roll already oscillates at exactly this period — it's
-    the same underlying stride clock everything in this task is slaved to —
-    so this *is* "matched to each thigh's rolling period" in the sense that
-    matters (same frequency, same phase reference), without making the
-    target a moving, still-being-learned quantity like a live hip_roll
-    reading would (that's an actual-position signal the policy is
-    simultaneously trying to shape, not a stable clock — chasing it would
-    fight itself over training).
+    the same underlying stride clock everything in this task is slaved to.
+    Checked directly against ref_g125sym's foot-contact channels (forward
+    command): one full `gait_period_steps` cycle (phase 0->2pi) contains
+    exactly one right-foot swing (~phase 40-120 deg) *and* one left-foot
+    swing (~phase 130-240 deg) — i.e. `sin(phase)` (cycles_per_period=1)
+    bobs once per *stride* (both feet), not once per *step* (either foot).
+    User confirmed they want the latter — one bob per footfall, either
+    foot — hence `sin(cycles_per_period * phase)` with cycles_per_period=2:
+    two full bob cycles per gait_period_steps, landing one bob peak inside
+    the right-foot swing and one inside the left-foot swing. Not derived
+    from a live hip_roll reading for the same reason as before: that's a
+    moving, still-being-learned target, not a stable clock.
 
     **Amplitude**: capped at 10 deg (see JoystickEnvCfg_Rough5's
     `head_bob_amplitude`) per user direction — down from earlier attempts'
@@ -84,7 +90,7 @@ def reward_head_bob(
     reintroduce that bug.
     """
     walking = (cmd_norm > 0.01).float()
-    target = base_angle + amplitude * torch.sin(phase) * walking
+    target = base_angle + amplitude * torch.sin(cycles_per_period * phase) * walking
     err = (neck_pitch_pos - target) ** 2
     return torch.exp(-err / tracking_sigma)
 
