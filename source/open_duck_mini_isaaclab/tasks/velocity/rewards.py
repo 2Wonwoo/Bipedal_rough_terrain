@@ -51,20 +51,30 @@ def reward_head_bob(
     so the nod stays locked to footstep timing rather than drifting relative
     to it.
 
-    amplitude=0.2618 rad (15 deg) was picked by FK (pinocchio), not guessed —
+    amplitude was originally 0.2618 rad (15 deg), picked by FK (pinocchio):
     at this robot's Z-neck READY pose (neck_pitch=head_pitch=30 deg), sweeping
     neck_pitch by +-15 deg moves the "head" URDF frame through 9.64 mm of
-    world-Z travel, i.e. ~1 cm peak-to-peak (the relationship is nonlinear and
-    a bit asymmetric around 30 deg — this is the calibrated value, not a
-    linear estimate).
+    world-Z travel (the relationship is nonlinear and a bit asymmetric
+    around 30 deg). v52's rollout actually achieved only ~+-12 deg of that
+    (RL traded some tracking for the other reward terms) — since the user
+    then asked for a *smaller* range, later configs (JoystickEnvCfg_Rough4+)
+    lower this further; see their docstrings for the current value.
 
-    `cmd_norm` gates this off at standstill (>0.01, same convention as
-    hip_inward_walking_only/reward_imitation) — the user asked for the nod
-    only while actually walking, not standing still.
+    v51/v52 (`cmd_norm`-gated to exactly 0 at standstill, matching
+    hip_inward_walking_only/reward_imitation's convention) turned out wrong
+    for this term specifically: zero reward means zero gradient, so nothing
+    pulled neck_pitch back toward level once a walking bout ended mid-nod —
+    the user observed the head staying visibly bowed at standstill. Fixed
+    by *collapsing the target* to base_angle when standing instead of
+    turning the reward off — `walking` zeroes the sine's amplitude, not the
+    whole term, so there's always a live gradient pulling neck_pitch home.
+    head_bob_counter_joint (if set) then follows automatically, since it
+    mirrors neck_pitch's deviation from base_angle unconditionally.
     """
-    target = base_angle + amplitude * torch.sin(phase)
+    walking = (cmd_norm > 0.01).float()
+    target = base_angle + amplitude * torch.sin(phase) * walking
     err = (neck_pitch_pos - target) ** 2
-    return torch.exp(-err / tracking_sigma) * (cmd_norm > 0.01).float()
+    return torch.exp(-err / tracking_sigma)
 
 
 def cost_torques(torques: torch.Tensor) -> torch.Tensor:

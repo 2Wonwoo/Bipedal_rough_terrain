@@ -1965,6 +1965,34 @@ class JoystickEnvCfg_Rough3(JoystickEnvCfg_Rough2):
 
 
 @configclass
+class JoystickEnvCfg_Rough4(JoystickEnvCfg_Rough3):
+    """Rough3 + 정지 시 목이 확실히 수평으로 + 진폭 축소.
+
+    사용자가 v52를 조이스틱으로 직접 테스트하다 지적한 두 가지:
+
+    1. **정지하면 고개를 숙이고 있다.** 원인: `reward_head_bob`이 정지에서
+       (`cmd_norm<=0.01`) 리워드를 통째로 0으로 껐다 — 걷다가 사인파의
+       "숙인" 지점에서 정지 명령이 들어오면, 그 순간부터 neck_pitch를
+       원위치로 되돌릴 그라디언트가 사라진다(남은 건 약한 `stand_still`
+       항뿐). `rewards.reward_head_bob`을 고쳐서, 정지에서 리워드를 끄는
+       대신 **목표를 사인파에서 기본각(수평)으로 접는다**
+       (`amplitude * sin(phase) * walking`, walking=0이면 진폭도 0) —
+       항상 살아있는 그라디언트가 neck_pitch를 집으로 당긴다. 값이 코드로만
+       바뀌므로 Rough3에서 새 필드는 필요 없다(이 클래스 docstring이 그
+       변경의 첫 사용자라는 표시).
+    2. **움직이는 범위를 더 줄여달라.** 진폭 0.2618 rad(15도, ~1cm 설계)를
+       **0.15 rad(약 8.6도)**로 낮췄다. v52 실측 진폭이 이미 목표보다
+       작았으니(±12도쯤), 이번엔 그보다도 작아질 것 — 육안으로 보고
+       필요하면 다시 조정.
+
+    **판정**: 정지 명령 직후에도 neck_pitch가 빠르게(수 스텝 내) 기본각
+    (30도)으로 돌아오는지, 그리고 걷는 동안 진폭이 눈에 띄게 작아졌는지.
+    """
+
+    head_bob_amplitude = 0.15  # ~8.6 deg, Rough2/3의 0.2618(15deg)보다 축소
+
+
+@configclass
 class JoystickEnvCfg_V34C20(JoystickEnvCfg_V34C):
     """imitation_v34c20 — v34c(정지 위상 고정) + 레퍼런스 높이 +20 mm (ref_g135)."""
 
