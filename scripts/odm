@@ -7,7 +7,7 @@
 #  터진 적도 있다.) 여기서는 버전 이름만 대면 태스크가 자동으로 붙는다.
 set -euo pipefail
 
-PROJ="/media/parksuho/Extreme SSD/parksuho/open_duck_mini_isaaclab"
+PROJ="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 IL="$HOME/Desktop/IsaacLab/isaaclab.sh"
 LOGROOT="$PROJ/logs/rsl_rl/open_duck_mini_v2_joystick"
 RUNLOG="$HOME/odm_logs"; mkdir -p "$RUNLOG"
@@ -72,6 +72,10 @@ task_of() {
     v73) echo "Isaac-OpenDuckMini-Joystick-V73-v0" ;;
     v74) echo "Isaac-OpenDuckMini-Joystick-V74-v0" ;;
     v75) echo "Isaac-OpenDuckMini-Joystick-V75-v0" ;;
+    # 우리 포크 전용 (upstream에 없음) — v75 + 지형/목 움직임. upstream이
+    # v83, v84... 를 계속 쓸 것이므로 그 이름은 피한다.
+    v75r) echo "Isaac-OpenDuckMini-Joystick-V75Rough-v0" ;;
+    v75rh) echo "Isaac-OpenDuckMini-Joystick-V75RoughHead-v0" ;;
     v76) echo "Isaac-OpenDuckMini-Joystick-V76-v0" ;;
     v77) echo "Isaac-OpenDuckMini-Joystick-V77-v0" ;;
     v78) echo "Isaac-OpenDuckMini-Joystick-V78-v0" ;;

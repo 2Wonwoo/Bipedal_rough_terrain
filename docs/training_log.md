@@ -2003,3 +2003,105 @@ v75 는 8700 에서 461 / 799). 마찰 0.4~1.3 이라는 더 넓은 조건에서
 3. **측정 잡음 폭 미측정** — 같은 체크포인트를 여러 번 재야 한다. 지금은
    작은 차이를 신뢰할 수 없다
 4. v77 @8400 측정, 실기 질량·CoM 실측, 버스 타임아웃 원인
+
+---
+
+## 지형+목 움직임을 v75 위로 리베이스 — V75Rough / V75RoughHead (2026-08-23)
+
+우리 커스텀 작업(브랜치 `terrain-on-main`, v49 기준: 험지 지형 학습 +
+hip_inward 정지 안전 수정 + 위상 동기 목 움직임)이 origin/main보다 70개
+커밋 뒤처져 있었다(v50→v82, 실기가 실제로 걸었고 최적화 목표가 "6방향
+추종"에서 "토크→효율→몸통 흔들림→안정성→방향 추종"으로 전면 개편됨).
+새 브랜치 `terrain-on-v75`를 `origin/main`에서 파서, 현재 실기 검증된
+권장 베이스라인 `JoystickEnvCfg_V75`(토크·토르소 각속도 페널티 포함,
+@11800iter 실기 검증) 위에 두 기능을 다시 얹었다.
+
+### 확인된 것 (재구현 근거)
+
+- upstream `terrains.py`는 진단/재생 전용(학습은 전부 평면에서 돌았다는
+  전제)이라 학습 시점 지형 분할과 겹치지 않는다. 다만 그 파일의 로봇
+  스케일 보정값(요철 2~12mm, 장애물 5~20mm)은 그대로 가져다 썼다.
+- **hip_inward 정지 시 안전 버그가 upstream에 여전히 그대로 남아있다** —
+  `hip_inward_walking_only` 게이팅이 정지 시 이 리워드를 통째로 끄면서
+  "정지 시 최소 간격 62mm"라는, 우리가 v50에서 이미 실측으로 무효화한
+  가정에 계속 의존 중(주석까지 그대로). 이번엔 팀에 알리지 않고 **우리
+  포크에만 조용히** 재적용하기로 함(사용자 결정, 2026-08-23).
+- `head_bob_*` 필드/함수, `tasks/velocity/terrain.py` 경로 모두 upstream과
+  이름 충돌 없음. 목 관절 인덱스(neck_pitch=5, head_pitch=6)도 안 바뀜.
+- 네트워크 크기·PPO 러너 설정은 클래스 상속이 아니라 **태스크 id 문자열**로
+  결정된다(`_BIG_NET_TASKS`, `runner_cfg_for`) — 새 태스크 2개를 양쪽에
+  다 등록해야 V75와 같은 큰 네트워크 + `JoystickPPORunnerCfg_Explore13`을
+  받는다.
+
+### 구현
+
+- `JoystickEnvCfg_V75Rough(JoystickEnvCfg_V75)`: `terrain` 필드만 교체
+  (평지 50%/요철 25%/장애물 25%, `curriculum=False`). 이 태스크 자체가
+  그동안 "미측정"으로 남아있던 "head_bob 없는 지형 학습" 대조군 역할도
+  겸한다.
+- `JoystickEnvCfg_V75RoughHead(JoystickEnvCfg_V75Rough)`: v51~v55에서
+  조이스틱 실측으로 검증을 마친 **최종 설계**를 중간 실험판 재현 없이
+  바로 반영 — neck_pitch 위상 동기(진폭 10도 상한), head_pitch 액션
+  레벨 하드 커플링(Z자 엇각), `cycles_per_period=2.0`(걸음마다 1번
+  바운싱).
+- hip_inward 수정은 upstream이 그 사이 추가한 `hip_outward` 코드(V67
+  전용, V75 체인에는 없어 죽은 코드지만 병합 가능)와 구조적으로 겹치지
+  않아 그대로 병합.
+
+### 발견한 버그 (수정함)
+
+`terrain.py`의 "flat" 서브테레인을 처음엔 `HfRandomUniformTerrainCfg
+(noise_range=(0,0))`로 가짜 평지를 만들었더니, IsaacLab의
+`height_step = int(noise_step / vertical_scale)`가 0이 되어 `np.arange`가
+`ZeroDivisionError`로 죽었다(스모크 테스트 `odm train v75rh 5 64`에서
+잡음). `terrain_gen.MeshPlaneTerrainCfg(proportion=0.5)`(진짜 평면
+서브테레인)로 교체해 해결.
+
+`big_foot/usd/`가 이 checkout에는 없어서(gitignore 대상, 로컬 빌드
+산출물) V75(정확히는 조상 V73)가 쓰는 big-foot USD를 못 찾아 첫 스모크
+시도가 실패했다 — `scripts/setup/convert_urdf.sh`를 GUI 모드로 1회
+실행해 생성(헤드리스 모드는 URDF 임포터 확장 문제로 안 됨, 기존에
+알려진 우회법 재사용).
+
+### 검증
+
+`pytest tests/`(48개 전부 통과, `test_no_undefined_names`/
+`test_task_registry_consistency` 포함) → `odm train v75rh 5 64` 스모크
+성공 → `odm train v75rh 3000 4096` 본 학습(2시간 1분 22초, 크래시 없음).
+
+**6방향 추종** (`odm measure v75rh`):
+
+| 명령 | achieved | err |
+|---|---|---|
+| 정지 | (+0.006,+0.001) | 0.006 |
+| 앞 | (+0.143,-0.007) | 0.010 |
+| 뒤 | (-0.119,-0.001) | 0.031 |
+| 좌 | (+0.005,+0.125) | 0.075 |
+| 우 | (-0.030,-0.133) | 0.073 |
+| 회전 | (-0.024,-0.011) | 0.026 |
+
+좌/우 오차(0.075/0.073)가 다른 방향보다 크다 — v55(구 브랜치, v49 기반)에서도
+좌측만 유독 컸던 것과 같은 패턴이 v75 기반에서도 재현된다(원인 미조사,
+좌우 대칭 문제인지 우연인지 아직 모름). base speed 0.146m/s는 레퍼런스
+0.205m/s보다 29% 느림 — v75 자체가 "느려도 방향만 맞으면 된다"는 새
+우선순위로 학습됐으므로 예상된 범위.
+
+**5mm 안전 클리어런스** (`leg_trunk_clearance.py --urdf big_foot/robot.urdf`
+— V75 계열이 쓰는 big-foot 임베디먼트로 재야 정확하다):
+
+| 명령 | 위반율 | 접촉 | 최소 간격 |
+|---|---|---|---|
+| 정지 | 0.0% | 0.0% | 12.1mm |
+| 앞 | 0.0% | 0.0% | 14.1mm |
+| 뒤 | 0.0% | 0.0% | 13.7mm |
+| 좌 | 0.0% | 0.0% | 13.2mm |
+| 우 | 0.0% | 0.0% | 10.9mm |
+| 회전 | 0.0% | 0.0% | 9.4mm |
+
+전 방향 위반 0%, 접촉 0%, 최소 9.4mm — v55(6.4mm)보다도 여유롭다.
+hip_inward 정지 수정이 v75 베이스 위에서도 그대로 유효함을 확인.
+
+**목 바운싱 걸음마다 정합** (전진 300스텝): neck_pitch 로컬 피크 25개 중
+23개(92%)가 좌/우 발 스윙 구간과 겹침 — v55의 96%와 일관된 결과.
+
+전부 통과. `mine` 원격 `terrain-on-v75` 브랜치로 커밋·푸시.

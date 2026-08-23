@@ -79,6 +79,7 @@ from .rewards import (
     cost_torques,
     cost_upright_standstill,
     reward_alive,
+    reward_head_bob,
     reward_imitation,
     reward_path_tracking,
     reward_tracking_ang_vel,
@@ -179,6 +180,26 @@ class JoystickEnv(DirectRLEnv):
             i for i, nm in enumerate(ACTUATOR_JOINT_NAMES)
             if nm in ("neck_pitch", "head_pitch", "head_yaw", "head_roll")
         ]
+
+        # head_bob: cfg.head_bob_joint_names 에 속한 head DOF 만 위상 동기 목표를
+        # 받는다 (Empty by default -> _head_bob_act_idx empty, _head_lock_act_idx ==
+        # _head_act_idx 전체, 기존 lock_head_joints 동작과 동일).
+        _bob_names = set(self.cfg.head_bob_joint_names)
+        self._head_bob_act_idx = [i for i in self._head_act_idx if ACTUATOR_JOINT_NAMES[i] in _bob_names]
+        self._head_lock_act_idx = [i for i in self._head_act_idx if i not in self._head_bob_act_idx]
+
+        # head_bob_counter_joint: _head_bob_act_idx[0]의 raw 델타를 부호만 반대로
+        # 그대로 미러한다 (Z자 엇각 유지 — 리워드가 아니라 액션 레벨 하드 커플링).
+        self._head_counter_act_idx = None
+        _counter_name = self.cfg.head_bob_counter_joint
+        if _counter_name is not None:
+            assert self._head_bob_act_idx, (
+                "head_bob_counter_joint가 설정됐는데 head_bob_joint_names가 비어있다"
+            )
+            self._head_counter_act_idx = ACTUATOR_JOINT_NAMES.index(_counter_name)
+            assert self._head_counter_act_idx in self._head_lock_act_idx, (
+                "head_bob_counter_joint는 head_bob_joint_names에 없는 head DOF여야 한다"
+            )
 
         n = self.num_envs
         nj = len(ACTUATOR_JOINT_NAMES)
@@ -440,8 +461,17 @@ class JoystickEnv(DirectRLEnv):
             # reward, and their commands are random targets the gait has no
             # opinion about, so leaving them actuated only spends exploration
             # noise on 4 of 14 action dims without informing locomotion.
+            #
+            # head_bob_joint_names에 속한 head DOF는 여기서 잠그지 않는다 — 그 목표는
+            # reward_head_bob이 학습으로 만들게 둔다. 나머지 head DOF(_head_lock_act_idx)
+            # 만 기존처럼 0으로 고정한다.
             action_w_delay = action_w_delay.clone()
-            action_w_delay[:, self._head_act_idx] = 0.0
+            action_w_delay[:, self._head_lock_act_idx] = 0.0
+            if self._head_counter_act_idx is not None:
+                # head_pitch를 neck_pitch의 원시 델타와 반대 부호로 강제한다 (Z자
+                # 엇각 유지). 리워드로는 보장이 안 된다 — 매 스텝 액션 레벨에서
+                # 무조건 덮어쓴다.
+                action_w_delay[:, self._head_counter_act_idx] = -action_w_delay[:, self._head_bob_act_idx[0]]
 
         default_pos = self._robot.data.default_joint_pos[:, self._joint_ids]
         target = default_pos + action_w_delay * self.cfg.action_scale
@@ -778,11 +808,39 @@ class JoystickEnv(DirectRLEnv):
 
         if self._hip_in_dir is not None:
             # 실측 관절각 기준. v31 은 목표에 걸었다가 실제 각을 못 묶었다.
-            inward = (self._hip_in_dir
-                      * (joint_pos[:, self._hip_in_act]
-                         - self._current_reference_motion[:, 0:14][:, self._hip_in_ref]))
+            walk_target = self._current_reference_motion[:, 0:14][:, self._hip_in_ref]
+            if getattr(cfg, "hip_inward_walking_only", False):
+                # v38 이력: 원래는 정지에서 이 항을 통째로 껐다. 이유는 "레퍼런스가
+                # 기준인데, standstill_hold가 위상을 0에 묶어서 그 기준 자체가
+                # 걷는 중 한쪽 발을 든 순간(비대칭)이 되고, leg_symmetry(-3.0)와
+                # 정면으로 싸워 hip_inward(-25.0, 8배)가 이겨서 정책이 +6.26도
+                # 짝다리로 굳는다"였다.
+                #
+                # 그런데 "정지에서 꺼도 안전하다"는 판단은 그 시점의 기본 정지
+                # 자세가 실측 62 mm 여유였다는 전제 위에 있었다. 이후 액추에이터
+                # 모델·레퍼런스·READY 자세가 여러 번 바뀌며 그 전제가 조용히
+                # 깨졌다 — 자갈/험지 지형 추가 실험(리워드는 동일 계보) 실측 결과
+                # 정지 시 5 mm 위반 88.0%, 실접촉 46.0%, 최소 간격 0.0 mm.
+                # 지형 유무와 무관함을 검증했다(같은 체크포인트를 지형 없는
+                # 태스크에 얹어 재생 — 평지가 위반 86.0%/접촉 82.0%로 오히려
+                # 더 나쁨). 즉 지형이 아니라 이 게이트 자체가 더 이상 안전하지
+                # 않다.
+                #
+                # 고쳐야 할 것은 "정지에서 끈다"가 아니라 "무엇을 기준으로
+                # 재는가" 였다 — 통째로 끄는 대신, 정지에서는 레퍼런스(비대칭)
+                # 대신 **정지 목표 자세(대칭 — cost_stand_still이 쓰는 것과 동일)**
+                # 를 기준으로 잰다. leg_symmetry가 원하는 지점과 hip_inward가
+                # 원하는 지점이 이제 같은 곳이라 더 이상 서로 안 싸운다.
+                standstill_target = (
+                    self._standstill_pose if self._standstill_pose is not None else default_joint_pos
+                )[:, self._hip_in_act]
+                is_standing = (torch.linalg.norm(self._command[:, :3], dim=-1) <= 0.01).unsqueeze(-1)
+                target = torch.where(is_standing, standstill_target, walk_target)
+            else:
+                target = walk_target
+            inward = self._hip_in_dir * (joint_pos[:, self._hip_in_act] - target)
             over = torch.clamp(inward - cfg.hip_inward_thresh, min=0.0).sum(dim=-1)
-            # 바깥으로 벌어지는 쪽도 막는다 (2026-08-18).
+            # 바깥으로 벌어지는 쪽도 막는다 (upstream, 2026-08-18).
             # 위 항은 **안쪽**만 본다 — 자가충돌 방지용이다. 그래서 벌어지는 데는
             # 아무 제동이 없었고, 넓은 지지 기반이 안 넘어지는 데 유리하니 정책이
             # 계속 벌렸다. 실측 결과 v59 가 레퍼런스보다 고관절을 **좌 7.8 / 우
@@ -792,22 +850,22 @@ class JoystickEnv(DirectRLEnv):
                 over = over + torch.clamp(
                     -inward - cfg.hip_outward_thresh, min=0.0
                 ).sum(dim=-1) * cfg.hip_outward_rel
-            if getattr(cfg, "hip_inward_walking_only", False):
-                # 정지에서는 끈다. 이 항은 **레퍼런스를 기준**으로 삼는데, 정지에서는
-                # standstill_hold 가 위상을 0 에 묶으므로 그 기준이 "걷는 중 한쪽 발을
-                # 든 순간" 의 고관절 자세가 된다 (위상 0 의 hip_roll: 좌 -7.69 / 우
-                # +5.50, 13.19 도 벌어짐). 그래서 정지에서 좌우 대칭을 요구하는
-                # leg_symmetry(-3.0) 와 정면으로 싸우고, 계수가 8배(-25) 라 이긴다.
-                #
-                # 실제로 v36 에서 그 균형점이 그대로 나왔다: 대칭이 요구하는 값은
-                # R_roll = L_roll = +1.60 도인데 hip_inward 경계가 +2.50 도라 정책이
-                # +6.26 도에서 멈췄고, 어긋남 4.66 도가 측정값과 정확히 일치한다.
-                #
-                # 정지에서 꺼도 되는 이유: 이 항의 목적은 보행 중 다리-몸통
-                # 자가충돌 방지인데(접촉 = 액추에이터 파손), 정지에서는 양발이 땅에
-                # 붙어 거의 기본 자세이고 실측 최소 간격이 62 mm 다 (위험선 5 mm).
-                over = over * (torch.linalg.norm(self._command[:, :3], dim=-1) > 0.01).float()
             terms["hip_inward"] = over * cfg.hip_inward_scale
+
+        if self._head_bob_act_idx:
+            # 보행 위상(imitation_phase 관측과 같은 신호)에 맞춰 neck_pitch가
+            # 위아래로 움직이도록 목표를 준다. head_pitch는 _pre_physics_step에서
+            # 액션 레벨로 반대 부호 커플링되어 Z자 엇각을 유지한다(리워드가 아닌
+            # 하드 커플링 — "리워드로는 보장이 안 된다").
+            phase = 2.0 * torch.pi * self._imitation_i.float() / self._gait_period_steps
+            neck_idx = self._head_bob_act_idx[0]
+            terms["head_bob"] = reward_head_bob(
+                joint_pos[:, neck_idx], phase, default_joint_pos[:, neck_idx],
+                cfg.head_bob_amplitude,
+                torch.linalg.norm(self._command[:, :3], dim=-1),
+                cfg.tracking_sigma,
+                cycles_per_period=cfg.head_bob_cycles_per_period,
+            ) * cfg.head_bob_scale
 
         if cfg.use_path_frame and cfg.path_tracking_scale != 0.0:
             terms["path_tracking"] = (

@@ -540,3 +540,45 @@ def reward_path_tracking(
         return yaw_term
     lateral = path_err[:, 0]
     return torch.exp(-k_lateral * lateral**2) + yaw_term
+
+
+def reward_head_bob(
+    neck_pitch_pos: torch.Tensor,   # [N]
+    phase: torch.Tensor,            # [N], imitation_phase와 같은 신호
+    base_angle: torch.Tensor,       # [N], default_joint_pos의 neck_pitch (READY)
+    amplitude: float,
+    cmd_norm: torch.Tensor,         # [N]
+    tracking_sigma: float,
+    cycles_per_period: float = 1.0,
+) -> torch.Tensor:
+    """걸을 때 목이 위상에 맞춰 위아래로(붕 뜨고 가라앉는) 움직이게 한다.
+
+    **동작은 끄덕임(tilt)이 아니라 병진(translation)이다.** neck_pitch가
+    올라가면 head_pitch가 (_pre_physics_step의 하드 커플링으로) 정확히 같은
+    양만큼 반대로 내려가, 로봇 우측면도에서 본 "Z자"의 두 각의 합이 항상
+    READY 자세와 같게 유지된다 — 그래서 얼굴/시선 각도는 그대로인 채 머리
+    높이만 오르내린다.
+
+    **위상 출처를 hip_roll 실측이 아니라 imitation_phase로 잡은 이유**:
+    hip_roll 자체가 RL로 학습되는 값이라 학습 도중 계속 움직이는 목표를
+    쫓는 꼴이 된다. imitation_phase는 걸음 주기의 시계 역할만 하는
+    고정 신호라 목표가 안정적이다.
+
+    **cycles_per_period**: `sin(phase)`는 gait_period_steps 한 바퀴
+    (양발 왕복 스트라이드) 당 1번 진동한다. 레퍼런스 모션의 발 접지 채널로
+    확인한 결과 그 한 주기 안에 오른발 스윙(phase 약 40~120도)과 왼발 스윙
+    (약 130~240도)이 둘 다 들어있다 — 즉 기본값(1.0)은 "스트라이드당 1번"
+    이지 "걸음(한쪽 발)마다 1번"이 아니다. 사용자가 실측 후 후자를
+    요청했고, `sin(cycles_per_period*phase)`로 일반화해 2.0을 쓰면 피크가
+    phase 45도/225도에 위치해 각각 오른발/왼발 스윙 구간 안에 들어온다
+    (수학적으로 확인, 롤아웃 재생으로 96% 정합률 실측).
+
+    **정지 시 처짐 방지**: 리워드 전체를 게이트하는 대신(그러면 걷다가
+    멈춘 순간의 각도에서 그레디언트를 잃고 그대로 처진다), 사인의 진폭만
+    0으로 접어 목표가 정확히 base_angle로 수렴하게 한다 — 정지해도 항상
+    살아있는 그레디언트가 남는다.
+    """
+    walking = (cmd_norm > 0.01).float()
+    target = base_angle + amplitude * torch.sin(cycles_per_period * phase) * walking
+    err = (neck_pitch_pos - target) ** 2
+    return torch.exp(-err / tracking_sigma)

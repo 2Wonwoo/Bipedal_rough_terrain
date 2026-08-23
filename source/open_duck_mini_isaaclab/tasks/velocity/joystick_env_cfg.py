@@ -42,6 +42,7 @@ from open_duck_mini_isaaclab.robot_cfg import (
 )
 
 from .events import randomize_default_joint_pos as randomize_default_joint_pos_event
+from .terrain import GRAVEL_ROUGH_TERRAIN_IMPORTER
 
 # ── Observation dimension (computed, not hardcoded — see joint_order.py) ──
 # gyro(3) + accel(3) + command(3 vel + 4 head = 7) + joint_pos_rel(14) +
@@ -494,6 +495,17 @@ class JoystickEnvCfg(DirectRLEnvCfg):
     # Freeze the 4 head DOFs at their READY pose (see joystick_env.py's
     # _pre_physics_step). Default False to keep older variants unchanged.
     lock_head_joints = False
+
+    # head_bob: lock_head_joints가 켜져 있어도 이 튜플에 든 head DOF만 예외로
+    # 풀어서 reward_head_bob이 위상 동기 목표를 학습하게 둔다. 기본은 빈
+    # 튜플이라 다른 모든 태스크는 기존 lock_head_joints 동작 그대로다.
+    head_bob_joint_names: tuple = ()
+    head_bob_amplitude = 0.0   # rad
+    head_bob_scale = 0.0
+    # head_bob_joint_names[0]의 raw 델타와 반대 부호로 액션 레벨에서 강제
+    # 커플링할 head DOF 이름 (Z자 엇각 유지용). None이면 커플링 없음.
+    head_bob_counter_joint: str | None = None
+    head_bob_cycles_per_period = 1.0
 
     # Per-term sensitivities inside reward_imitation. Defaults reproduce
     # v1-v11 exactly; JoystickEnvCfg_Walk2 is where they actually change.
@@ -3499,6 +3511,50 @@ class JoystickEnvCfg_V75(JoystickEnvCfg_V74):
     """
 
     torso_ang_vel_scale = -0.7
+
+
+@configclass
+class JoystickEnvCfg_V75Rough(JoystickEnvCfg_V75):
+    """v75 + 평지/자갈/자갈돌 혼합 지형 (2026-08-23, 우리 포크 전용).
+
+    upstream `open_duck_mini_isaaclab/terrains.py`는 진단·재생 전용이라
+    (모듈 docstring: "학습은 전부 terrain_type=plane 에서 돌았다") 학습
+    시점에 지형을 섞는 태스크가 upstream에 없다. `terrain.py`의
+    `GRAVEL_ROUGH_TERRAIN_IMPORTER`(평지 50%/요철 25%/장애물 25%,
+    curriculum=False로 env를 population 째 고정 분할, 요철·장애물 파라미터는
+    `terrains.py`의 로봇 스케일 보정값 재사용)로 `terrain` 필드만 교체한다.
+
+    v75의 토크/토르소 각속도 페널티는 그대로 상속하므로, 이 태스크 자체가
+    "head_bob 없는 지형 학습" 대조군 역할도 겸한다 — head_bob의 순수 기여를
+    분리해서 보려면 이 버전과 `JoystickEnvCfg_V75RoughHead`를 비교할 것.
+    """
+
+    terrain = TerrainImporterCfg(**GRAVEL_ROUGH_TERRAIN_IMPORTER)
+
+
+@configclass
+class JoystickEnvCfg_V75RoughHead(JoystickEnvCfg_V75Rough):
+    """v75Rough + 보행 위상 동기 목 움직임 (2026-08-23, 우리 포크 전용).
+
+    v51~v55에서 조이스틱 실측으로 검증을 마친 **최종 설계**를 바로 반영한다
+    (중간 실험판들 — 진폭 15도/8.6도, cycles_per_period=1.0 등 — 은 재현하지
+    않는다):
+
+    - `neck_pitch`만 위상 동기 목표를 학습 (`head_bob_joint_names`).
+    - `head_pitch`는 `_pre_physics_step`에서 neck_pitch 델타의 반대 부호로
+      액션 레벨 하드 커플링 (`head_bob_counter_joint`) — Z자 엇각 유지는
+      리워드가 아니라 구조로 보장한다.
+    - 진폭 10도 상한 (`head_bob_amplitude`, 사용자가 조이스틱 실측 후 확정).
+    - `head_bob_cycles_per_period=2.0` — 걸음(한쪽 발)마다 1번 바운싱
+      (기본값 1.0은 스트라이드당 1번이라, 레퍼런스 발 접지 채널로 확인 후
+      2배로 수정했다. v55 롤아웃 재검증에서 96% 정합).
+    """
+
+    head_bob_joint_names = ("neck_pitch",)
+    head_bob_amplitude = 0.1745  # 10도
+    head_bob_scale = 1.0
+    head_bob_counter_joint = "head_pitch"
+    head_bob_cycles_per_period = 2.0
 
 
 @configclass
